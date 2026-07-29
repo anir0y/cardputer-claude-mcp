@@ -66,4 +66,4 @@ A channel mismatch looks exactly like a dead device — `TX-SENT` with no `TX-AC
 ## License
 
 MIT. `cardputer/patched-sources/` contains M5Stack files (also MIT) modified by
-this project, with their original SPDX headers intact — see [LICENSE](LICENSE).
+this project, with their original SPDX headers intact — see [LICENSE](LICENSE) and [NOTICE](NOTICE).

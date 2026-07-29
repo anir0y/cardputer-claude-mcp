@@ -1,0 +1,16 @@
+# Third-party code
+`cardputer/patched-sources/main/` contains files from M5Stack's
+**M5Cardputer-UserDemo**, modified by this project. They are redistributed under
+their original MIT license and retain their original SPDX headers:
+
+    SPDX-FileCopyrightText: 2025 M5Stack Technology CO LTD
+    SPDX-License-Identifier: MIT
+
+Upstream: https://github.com/m5stack/M5Cardputer-UserDemo
+Base commit: b549eac
+
+`cardputer/espnow-notify.patch` contains only the modifications made by this
+project, expressed as a diff against that commit.
+
+`bridge-esp32c5/apply_c5_patches.py` patches Espressif's `esp-now` component at
+build time in a local checkout; it redistributes none of Espressif's code.
