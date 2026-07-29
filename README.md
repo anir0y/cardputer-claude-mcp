@@ -36,8 +36,15 @@ Cardputer runs a patched build of M5's own `M5Cardputer-UserDemo`.
 | [Protocol Reference](wiki/Protocol-Reference.md) | Serial wire format, ESP-NOW ack scheme, HTTP API |
 | [Troubleshooting](wiki/Troubleshooting.md) | Nothing arrives, or a build fails |
 
-The `wiki/` pages use flat `Page-Name.md` naming, so the folder can be pushed
-straight to a GitHub wiki (`git clone <repo>.wiki.git`) with no rewriting.
+These pages are readable as-is in the repo tree. To also publish them to the
+**Wiki tab**, run `./wiki/sync-to-github-wiki.sh` — the wiki is a separate git
+repo with a flat URL space, so the script rewrites inter-page links (`.md` must
+be dropped) and `../`-relative file references (no parent directory exists
+there) before pushing. Files in `wiki/` are left untouched.
+
+First run needs one manual step: GitHub does not create the wiki git repo until
+a page is saved through the web UI, and exposes no API for it. The script says
+so and exits if that hasn't happened yet.
 
 ## The one failure mode to check first
 
