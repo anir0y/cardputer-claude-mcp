@@ -1,0 +1,22 @@
+# ESP-IDF build output
+build/
+sdkconfig
+sdkconfig.old
+managed_components/
+components/
+dependencies.lock
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+
+# Runtime state — transcripts and logs contain your message history
+results/
+*.log
+
+# Generated from server/local.espnow.webapp.plist.template — contains local paths
+local.espnow.webapp.plist
+
+# macOS
+.DS_Store

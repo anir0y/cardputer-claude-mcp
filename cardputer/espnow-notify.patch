@@ -1,0 +1,234 @@
+diff --git a/main/hal/hal.cpp b/main/hal/hal.cpp
+index 515f276..9eb1761 100644
+--- a/main/hal/hal.cpp
++++ b/main/hal/hal.cpp
+@@ -31,11 +31,25 @@ void Hal::init()
+     M5.Display.setBrightness(0);
+     M5.Speaker.begin();  // Codec takes some time to initialize
+ 
++    // Upstream never sets a volume, so notification chirps played at the
++    // M5Unified default and were easy to miss entirely. 0-255.
++    M5.Speaker.setVolume(220);
++
+     display_init();
+     i2c_scan();
+     keyboard_init();
+     setting_init();
+     spi_init();
++
++    // Bring ESP-NOW up at boot so notifications arrive without the Chat app
++    // having been opened first. Upstream only called this from AppChat::onOpen(),
++    // which meant nothing was listening after a fresh boot.
++    //
++    // NOTE: this deliberately makes ESP-NOW the owner of the radio. espNowInit()
++    // disconnects any WiFi station connection, so WiFi-dependent apps (SetWiFi,
++    // NTP time sync) will not work while notifications are enabled. That is the
++    // accepted trade-off; call espNowDeinit() to hand the radio back.
++    espNowInit();
+ }
+ 
+ void Hal::update()
+@@ -43,6 +57,7 @@ void Hal::update()
+     M5.update();
+     keyboard.update();
+     capLora868.update();
++    espNowNotifyUpdate();
+ }
+ 
+ void Hal::feedTheDog()
+@@ -394,7 +409,45 @@ void Hal::stop_sntp()
+ #include <espnow_utils.h>
+ #include <esp_check.h>
+ 
+-static std::string _espnow_received_data;
++#include <deque>
++#include <mutex>
++#include <atomic>
++#include <cstring>
++
++// Notification support (patched).
++//
++// Upstream kept a single std::string here, so every incoming message
++// OVERWROTE the previous one, and it was only ever read from
++// AppChat::onRunning(). With the Chat app closed, messages were received and
++// silently discarded. That makes the stock firmware unusable as a notifier.
++//
++// Replaced with a bounded queue plus an alert flag consumed by Hal::update(),
++// which runs from main.cpp's loop on every iteration regardless of which app is
++// active — so an alert fires even when Chat is closed.
++static constexpr size_t ESPNOW_QUEUE_MAX = 32;
++
++// Control traffic prefix. Messages starting with this are protocol, not chat,
++// and are never queued for display.
++static const char* ESPNOW_ACK_PREFIX = "\x01" "ACK:";
++
++static std::deque<std::string> _espnow_queue;
++static std::string _espnow_received_data;  // head of queue, handed to apps
++static std::mutex _espnow_mutex;
++static std::atomic<bool> _espnow_alert_pending{false};
++static std::atomic<uint32_t> _espnow_total_received{0};
++static std::atomic<bool> _espnow_ack_enabled{true};
++static std::string _espnow_pending_ack;
++
++static uint32_t _espnow_crc32(const char* data, size_t len)
++{
++    uint32_t crc = 0xFFFFFFFFu;
++    for (size_t i = 0; i < len; i++) {
++        crc ^= static_cast<uint8_t>(data[i]);
++        for (int b = 0; b < 8; b++) crc = (crc >> 1) ^ (0xEDB88320u & (-(int32_t)(crc & 1)));
++    }
++    return ~crc;
++}
++
+ static esp_err_t _handle_espnow_received(uint8_t* src_addr, void* data, size_t size, wifi_pkt_rx_ctrl_t* rx_ctrl)
+ {
+     const char* TAG = "espnow";
+@@ -409,7 +462,36 @@ static esp_err_t _handle_espnow_received(uint8_t* src_addr, void* data, size_t s
+     ESP_LOGI(TAG, "espnow_recv, <%" PRIu32 "> [" MACSTR "][%d][%d][%u]: %.*s", count++, MAC2STR(src_addr),
+              rx_ctrl->channel, rx_ctrl->rssi, size, size, (char*)data);
+ 
+-    _espnow_received_data = std::string((char*)data, size);
++    std::string msg(static_cast<char*>(data), size);
++
++    // Swallow ACKs from other nodes — they are control traffic, not messages.
++    if (msg.rfind(ESPNOW_ACK_PREFIX, 0) == 0) {
++        return ESP_OK;
++    }
++
++    {
++        std::lock_guard<std::mutex> lock(_espnow_mutex);
++        // Drop the OLDEST when full: for a notifier the newest matters most.
++        if (_espnow_queue.size() >= ESPNOW_QUEUE_MAX) {
++            _espnow_queue.pop_front();
++        }
++        _espnow_queue.push_back(msg);
++
++        if (_espnow_ack_enabled) {
++            // Queue an ACK keyed by payload CRC so the sender can retry
++            // unacked messages without changing the visible message text.
++            char buf[32];
++            snprintf(buf, sizeof(buf), "%s%08" PRIx32, ESPNOW_ACK_PREFIX,
++                     _espnow_crc32(msg.data(), msg.size()));
++            _espnow_pending_ack = buf;
++        }
++    }
++
++    _espnow_total_received++;
++    // Deliberately only a flag here: this callback runs on the espnow task, and
++    // touching M5 (speaker/display) off the main task is not safe. Hal::update()
++    // does the actual alerting.
++    _espnow_alert_pending = true;
+ 
+     return ESP_OK;
+ }
+@@ -475,7 +557,14 @@ void Hal::espNowSend(const std::string& data)
+ 
+ bool Hal::espNowAvailable()
+ {
+-    return _espnow_received_data.size() > 0;
++    std::lock_guard<std::mutex> lock(_espnow_mutex);
++    if (_espnow_queue.empty()) {
++        return false;
++    }
++    // Expose the head. AppChat's available -> get -> clear cycle now drains the
++    // queue one message per iteration instead of only ever seeing the last one.
++    _espnow_received_data = _espnow_queue.front();
++    return true;
+ }
+ 
+ const std::string& Hal::espNowGetReceivedData()
+@@ -485,9 +574,65 @@ const std::string& Hal::espNowGetReceivedData()
+ 
+ void Hal::espNowClearReceivedData()
+ {
++    std::lock_guard<std::mutex> lock(_espnow_mutex);
++    if (!_espnow_queue.empty()) {
++        _espnow_queue.pop_front();
++    }
+     _espnow_received_data.clear();
+ }
+ 
++size_t Hal::espNowPendingCount()
++{
++    std::lock_guard<std::mutex> lock(_espnow_mutex);
++    return _espnow_queue.size();
++}
++
++uint32_t Hal::espNowTotalReceived()
++{
++    return _espnow_total_received;
++}
++
++void Hal::espNowSetAckEnabled(bool enabled)
++{
++    _espnow_ack_enabled = enabled;
++}
++
++// Called from Hal::update(), i.e. main.cpp's loop, so this runs on every
++// iteration no matter which app is foreground. This is what makes notifications
++// work with the Chat app closed.
++void Hal::espNowNotifyUpdate()
++{
++    if (!_is_esp_now_inited) {
++        return;
++    }
++
++    // Flush any ACK the receive callback queued. Sending from the callback
++    // itself risks blocking the espnow task.
++    std::string ack;
++    {
++        std::lock_guard<std::mutex> lock(_espnow_mutex);
++        ack.swap(_espnow_pending_ack);
++    }
++    if (!ack.empty()) {
++        espnow_frame_head_t frame_head = ESPNOW_FRAME_CONFIG_DEFAULT();
++        espnow_send(ESPNOW_DATA_TYPE_DATA, ESPNOW_ADDR_BROADCAST, ack.c_str(), ack.size(), &frame_head, 0);
++    }
++
++    if (!_espnow_alert_pending.exchange(false)) {
++        return;
++    }
++
++    mclog::tagInfo(_tag, "espnow notify: {} pending", espNowPendingCount());
++
++    // Three rising chirps, long enough to notice across a room. 70 ms at the
++    // default volume was inaudible in practice.
++    M5.Speaker.tone(2200, 130);
++    delay(150);
++    M5.Speaker.tone(2900, 130);
++    delay(150);
++    M5.Speaker.tone(3600, 180);
++}
++
+ /* -------------------------------------------------------------------------- */
+ /*                                     IR                                     */
+ /* -------------------------------------------------------------------------- */
+diff --git a/main/hal/hal.h b/main/hal/hal.h
+index 18967ef..fecd924 100644
+--- a/main/hal/hal.h
++++ b/main/hal/hal.h
+@@ -95,6 +95,12 @@ public:
+     const std::string& espNowGetReceivedData();
+     void espNowClearReceivedData();
+ 
++    /* Notification support (patched) — see hal.cpp for rationale. */
++    size_t espNowPendingCount();
++    uint32_t espNowTotalReceived();
++    void espNowSetAckEnabled(bool enabled);
++    void espNowNotifyUpdate();  // called from Hal::update(), alerts from any app
++
+     /* ----------------------------------- IR ----------------------------------- */
+     void irInit();
+     void irSend(uint8_t addr, uint8_t cmd);
+diff --git a/main/idf_component.yml b/main/idf_component.yml
+index 44c47a4..cfffdbe 100644
+--- a/main/idf_component.yml
++++ b/main/idf_component.yml
+@@ -14,6 +14,6 @@ dependencies:
+   #   # `public` flag doesn't have an effect dependencies of the `main` component.
+   #   # All dependencies of `main` are public by default.
+   #   public: true
+-  espressif/esp-now: ^2.5.2
++  espressif/esp-now: "==2.5.3"   # pinned: must match espnow-bridge, and 2.5.2 breaks on IDF 5.5
+   espressif/esp_tinyusb: ^1.1
+   jgromes/radiolib: ^7.2.1

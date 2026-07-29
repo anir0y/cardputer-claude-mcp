@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchAgent template for webapp.py — the ESP-NOW bridge's serial owner.
+
+  Replace {{PYTHON}} and {{PROJECT_DIR}} with ABSOLUTE paths, then install:
+
+      sed -e "s|{{PYTHON}}|$PWD/.venv/bin/python|g" \
+          -e "s|{{PROJECT_DIR}}|$PWD|g" \
+          server/local.espnow.webapp.plist.template \
+          > ~/Library/LaunchAgents/local.espnow.webapp.plist
+
+      mkdir -p "$PWD/results"
+      launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.espnow.webapp.plist
+
+  launchd does not expand ~, $HOME, or shell variables in any of these values.
+
+  Every non-obvious key below is load-bearing; see the comments inline.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>local.espnow.webapp</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>{{PYTHON}}</string>
+		<string>{{PROJECT_DIR}}/server/webapp.py</string>
+		<!-- Add <string>--http-port</string><string>8765</string> to change the port.
+		     Remember to update ESPNOW_WEBAPP_URL for the MCP server to match. -->
+	</array>
+
+	<key>WorkingDirectory</key>
+	<string>{{PROJECT_DIR}}</string>
+
+	<key>EnvironmentVariables</key>
+	<dict>
+		<!-- REQUIRED. Without it Python block-buffers stdout when it isn't a tty,
+		     so the logs below stay empty exactly when you need them. -->
+		<key>PYTHONUNBUFFERED</key>
+		<string>1</string>
+	</dict>
+
+	<key>RunAtLoad</key>
+	<true/>
+
+	<!-- Restart if it dies. -->
+	<key>KeepAlive</key>
+	<true/>
+
+	<!-- Seconds between restarts. Without a throttle, a crash-looping webapp
+	     (e.g. the C5 unplugged) respawns as fast as launchd can fork. -->
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+
+	<!-- No UI; keeps it off the App Nap / foreground scheduling path. -->
+	<key>ProcessType</key>
+	<string>Background</string>
+
+	<!-- {{PROJECT_DIR}}/results must exist before bootstrap — launchd will not
+	     create it, and it fails silently if the directory is missing. -->
+	<key>StandardOutPath</key>
+	<string>{{PROJECT_DIR}}/results/webapp.out.log</string>
+	<key>StandardErrorPath</key>
+	<string>{{PROJECT_DIR}}/results/webapp.err.log</string>
+</dict>
+</plist>

@@ -1,0 +1,6 @@
+dependencies:
+  idf:
+    version: '>=5.5'
+  # Must match the version M5Cardputer-UserDemo uses, or the framing the two
+  # sides put on the wire can differ and messages are silently dropped.
+  espressif/esp-now: "==2.5.3"

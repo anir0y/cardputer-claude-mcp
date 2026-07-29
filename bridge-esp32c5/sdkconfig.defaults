@@ -1,0 +1,6 @@
+# Console and protocol I/O both go over the C5's native USB Serial/JTAG.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+# ESP-NOW receives are missed while idle if power save is on.
+CONFIG_ESP_WIFI_PS_NONE=y
+CONFIG_ESP_TASK_WDT_INIT=n
