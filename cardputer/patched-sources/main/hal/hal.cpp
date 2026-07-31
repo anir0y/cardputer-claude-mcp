@@ -615,7 +615,20 @@ void Hal::espNowNotifyUpdate()
     }
     if (!ack.empty()) {
         espnow_frame_head_t frame_head = ESPNOW_FRAME_CONFIG_DEFAULT();
-        espnow_send(ESPNOW_DATA_TYPE_DATA, ESPNOW_ADDR_BROADCAST, ack.c_str(), ack.size(), &frame_head, 0);
+        // Was: timeout 0 with the return value DISCARDED. This runs from Hal::update()
+        // right after a receive -- exactly when the espnow task is busiest -- so a
+        // zero-tick send failed immediately and the ACK was dropped silently. Every
+        // message then looked unacked and the bridge retried it 3x (visible as
+        // triplicate notifications on the device).
+        // Bounded wait, NOT portMAX_DELAY: this is the UI loop and must not block
+        // forever. Result is logged either way so a future failure is visible.
+        auto ack_ret = espnow_send(ESPNOW_DATA_TYPE_DATA, ESPNOW_ADDR_BROADCAST, ack.c_str(), ack.size(),
+                                   &frame_head, pdMS_TO_TICKS(100));
+        if (ack_ret != ESP_OK) {
+            mclog::tagError(_tag, "espnow ack send failed: {}", esp_err_to_name(ack_ret));
+        } else {
+            mclog::tagInfo(_tag, "espnow ack sent");
+        }
     }
 
     if (!_espnow_alert_pending.exchange(false)) {
